@@ -2,6 +2,7 @@ package com.github.shangtanlin.task;
 
 import com.alibaba.fastjson.JSON;
 import com.github.shangtanlin.mapper.mq.MqMessageLogMapper;
+import com.github.shangtanlin.model.dto.es.OrderSyncMessage;
 import com.github.shangtanlin.model.dto.mq.MqCorrelationData;
 import com.github.shangtanlin.model.dto.order.OrderCancelMessage;
 import com.github.shangtanlin.model.entity.mq.MqMessageLog;
@@ -35,6 +36,7 @@ public class MqMessageRetryTask {
      */
     private static final int BUSINESS_TYPE_CART = 0;      // 购物车写回
     private static final int BUSINESS_TYPE_ORDER = 1;     // 订单超时关单
+    private static final int BUSINESS_TYPE_ES_SYNC = 2;   // 子订单ES同步
 
     @Autowired
     private MqMessageLogMapper mqMessageLogMapper;
@@ -129,6 +131,9 @@ public class MqMessageRetryTask {
             case BUSINESS_TYPE_ORDER:
                 // 订单超时关单消息
                 return JSON.parseObject(payload, OrderCancelMessage.class);
+            case BUSINESS_TYPE_ES_SYNC:
+                // 子订单ES同步消息
+                return JSON.parseObject(payload, OrderSyncMessage.class);
             default:
                 log.warn("未知的业务类型: {}, ID: {}", businessType, failLog.getId());
                 return null;

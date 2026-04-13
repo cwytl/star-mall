@@ -35,6 +35,7 @@ import com.github.shangtanlin.model.dto.order.OrderConfirmDTO;
 import com.github.shangtanlin.model.dto.order.OrderItemDTO;
 import com.github.shangtanlin.model.dto.order.OrderSubmitDTO;
 import com.github.shangtanlin.model.dto.mq.MqCorrelationData;
+import com.github.shangtanlin.model.entity.cart.CartItem;
 import com.github.shangtanlin.model.entity.mq.MqMessageLog;
 import com.github.shangtanlin.model.entity.order.OrderItem;
 import com.github.shangtanlin.model.entity.order.ParentOrder;
@@ -552,18 +553,9 @@ public class OrderServiceImpl
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    // 遍历刚才生成的子订单列表，逐条发送同步消息
+                    // --- A. 发送子订单 ES 同步消息（带可靠性保障）---
                     for (SubOrder subOrder : subOrderList) {
-                        // 封装简单的消息体，只传 ID 和 操作类型
-                        // 1 表示新增 (INSERT)
-                        OrderSyncMessage message = new OrderSyncMessage(subOrder.getId(), 1);
-
-                        // 发送给 RabbitMQ
-                        rabbitTemplate.convertAndSend(
-                                SubOrderMQConfig.SUB_ORDER_EXCHANGE,
-                                SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
-                                message
-                        );
+                        sendEsSyncMessage(subOrder.getId(), 1);  // type=1 表示新增
                     }
 
                     // B. 发送延迟关单消息（先入库再发送，使用 TTL + 死信队列方式）
@@ -587,6 +579,8 @@ public class OrderServiceImpl
                             .build();
                     mqMessageLogMapper.insert(messageLog);
 
+
+
                     // 3. 构造 CorrelationData
                     MqCorrelationData correlationData = new MqCorrelationData(
                             msgId,
@@ -595,15 +589,13 @@ public class OrderServiceImpl
                             cancelMessage
                     );
 
-                    //模拟路由失败
-                    String wrongKey = "invalidKey";
 
                     // 4. 发送消息到延迟交换机（普通 Direct Exchange，支持 mandatory）
                     // 消息会先进入 delay.queue（TTL=15分钟），过期后自动进入 dlx.exchange → timeout.queue
                     rabbitTemplate.convertAndSend(
                             OrderMQConfig.DELAY_EXCHANGE,
-                            //OrderMQConfig.DELAY_ROUTING_KEY,
-                            wrongKey,
+                            OrderMQConfig.DELAY_ROUTING_KEY,
+                            //wrongKey,
                             cancelMessage,
                             message -> {
                                 message.getMessageProperties().setCorrelationId(msgId);
@@ -711,14 +703,7 @@ public class OrderServiceImpl
                 @Override
                 public void afterCommit() {
                     for (Long subId : subOrderIds) {
-                        // 构建同步消息：type = 4 表示取消/关闭（逻辑同 update，都是全量覆盖）
-                        OrderSyncMessage syncMessage = new OrderSyncMessage(subId, 2);
-
-                        rabbitTemplate.convertAndSend(
-                                SubOrderMQConfig.SUB_ORDER_EXCHANGE,
-                                SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
-                                syncMessage
-                        );
+                        sendEsSyncMessage(subId, 2);  // type=2 表示更新（取消/关闭）
                     }
                     log.info("订单取消事务已提交，已发送 {} 条子订单 ES 同步消息", subOrderIds.size());
                 }
@@ -924,14 +909,7 @@ public class OrderServiceImpl
                 @Override
                 public void afterCommit() {
                     for (Long subId : subOrderIds) {
-                        // 构建更新消息 (type=2 代表更新)
-                        OrderSyncMessage message = new OrderSyncMessage(subId, 2);
-
-                        rabbitTemplate.convertAndSend(
-                                SubOrderMQConfig.SUB_ORDER_EXCHANGE,
-                                SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
-                                message
-                        );
+                        sendEsSyncMessage(subId, 2);  // type=2 表示更新
                     }
                     log.info("支付成功事务已提交，已发送 {} 条子订单同步消息", subOrderIds.size());
                 }
@@ -1070,20 +1048,12 @@ public class OrderServiceImpl
         // 6. 核心逻辑：联动检查父订单
         checkAndCompleteParentOrder(subOrder.getParentOrderSn());
 
-        // 5. 【新增逻辑】发送 MQ 消息异步同步 ES
-        // 逻辑：在事务提交后，通知消费者重新拉取最新的子订单视图
+        // 5. 【新增逻辑】发送 MQ 消息异步同步 ES（带可靠性保障）
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    // 构建更新消息 (type=2 代表更新)
-                    OrderSyncMessage message = new OrderSyncMessage(subOrderId, 2);
-
-                    rabbitTemplate.convertAndSend(
-                            SubOrderMQConfig.SUB_ORDER_EXCHANGE,
-                            SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
-                            message
-                    );
+                    sendEsSyncMessage(subOrderId, 2);  // type=2 表示更新
                     log.info("确认收货事务已提交，已发出 ES 同步消息，子订单ID: {}", subOrderId);
                 }
             });
@@ -1200,19 +1170,12 @@ public class OrderServiceImpl
         couponService.releaseCoupon(parentOrder.getCouponUserRecordId());
 
 
-        // 5. 发送 MQ 消息同步 ES 状态
-
+        // 5. 发送 MQ 消息同步 ES 状态（带可靠性保障）
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                        // 构建更新消息 (type=2 代表更新)
-                        OrderSyncMessage message = new OrderSyncMessage(subOrder.getId(), 2);
-                        rabbitTemplate.convertAndSend(
-                                SubOrderMQConfig.SUB_ORDER_EXCHANGE,
-                                SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
-                                message
-                        );
+                    sendEsSyncMessage(subOrder.getId(), 2);  // type=2 表示更新
                     log.info("支付成功事务已提交，已发送1条子订单同步消息");
                 }
             });
@@ -1651,5 +1614,65 @@ public class OrderServiceImpl
         private BigDecimal payAmount;     // 最终实付金额
     }
 
+
+    /**
+     * 发送子订单 ES 同步消息（带可靠性保障）
+     * 先入库日志，再发送消息，通过 ConfirmCallback 确认结果
+     *
+     * @param subOrderId 子订单ID
+     * @param type       操作类型：1-新增，2-更新，3-删除
+     */
+    private void sendEsSyncMessage(Long subOrderId, Integer type) {
+        OrderSyncMessage syncMessage = new OrderSyncMessage(subOrderId, type);
+
+
+
+
+        // 1. 生成消息ID
+        String msgId = UUID.randomUUID().toString();
+
+        // 2. 先入库日志（businessType=2 表示子订单ES同步）
+        MqMessageLog messageLog = MqMessageLog.builder()
+                .id(msgId)
+                .sourceType(0)  // 0-生产者端
+                .businessType(2)  // 2-子订单ES同步
+                .exchange(SubOrderMQConfig.SUB_ORDER_EXCHANGE)
+                .routingKey(SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY)
+                .payload(JSONUtil.toJsonStr(syncMessage))
+                .status(0)  // 0-发送中
+                .retryCount(0)
+                .cause(null)
+                .nextRetryTime(LocalDateTime.now())
+                .build();
+        mqMessageLogMapper.insert(messageLog);
+
+        // 3. 构造 CorrelationData
+        MqCorrelationData correlationData = new MqCorrelationData(
+                msgId,
+                SubOrderMQConfig.SUB_ORDER_EXCHANGE,
+                SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
+                syncMessage
+        );
+
+
+        //模拟路由失败
+        String wrongKey = "invalidKey";
+
+        // 4. 发送消息
+        rabbitTemplate.convertAndSend(
+                SubOrderMQConfig.SUB_ORDER_EXCHANGE,
+                //SubOrderMQConfig.SUB_ORDER_SYNC_ROUTING_KEY,
+                wrongKey,
+                syncMessage,
+                message -> {
+                    message.getMessageProperties().setCorrelationId(msgId);
+                    message.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+                    return message;
+                },
+                correlationData
+        );
+
+        log.info("📝 [ES同步] 已发送同步消息，MsgId: {}, SubOrderId: {}, Type: {}", msgId, subOrderId, type);
+    }
 
 }

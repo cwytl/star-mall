@@ -1,11 +1,6 @@
 package com.github.shangtanlin.config.mq;
 
-import org.springframework.amqp.core.Binding;
-import org.springframework.amqp.core.BindingBuilder;
-import org.springframework.amqp.core.Queue;
-import org.springframework.amqp.core.TopicExchange;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
-import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.amqp.core.*;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -13,57 +8,82 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class SubOrderMQConfig {
 
-    /**
-     * 交换机名称：订单业务交换机
-     */
+    // ========== 业务队列常量 ==========
     public static final String SUB_ORDER_EXCHANGE = "order.sub.exchange";
-
-    /**
-     * 队列名称：同步 ES 索引的专用队列
-     */
     public static final String SUB_ORDER_ES_QUEUE = "order.sub.es.queue";
-
-    /**
-     * 路由键：用于匹配子订单同步逻辑
-     * 使用 Topic 模式建议：order.sub.sync
-     */
     public static final String SUB_ORDER_SYNC_ROUTING_KEY = "order.sub.sync";
 
+    // ========== 死信队列常量（消费者重试）==========
+    public static final String SUB_ORDER_DLX_EXCHANGE = "order.sub.dlx.exchange";
+    public static final String SUB_ORDER_DLX_QUEUE = "order.sub.dlx.queue";
+    public static final String SUB_ORDER_DLX_ROUTING_KEY = "order.sub.dlx.key";
+
+    // ========== 重试间隔常量 ==========
+    /** 消费者重试间隔：30秒 */
+    public static final int RETRY_INTERVAL_MS = 30000;
+    /** 最大重试次数 */
+    public static final int MAX_RETRY_COUNT = 3;
+
+    // ========== 业务队列配置 ==========
 
     /**
-     * 1. 声明交换机 (TopicExchange 模式最灵活)
+     * 业务交换机（TopicExchange）
      */
     @Bean
     public TopicExchange subOrderExchange() {
-        // 参数：名称，是否持久化，是否自动删除
         return new TopicExchange(SUB_ORDER_EXCHANGE, true, false);
     }
 
     /**
-     * 2. 声明队列
+     * 业务队列（配置死信交换机，消费者 reject 后进入死信队列）
      */
     @Bean
     public Queue subOrderEsQueue() {
-        // 参数：名称，是否持久化
-        return new Queue(SUB_ORDER_ES_QUEUE, true);
+        return QueueBuilder.durable(SUB_ORDER_ES_QUEUE)
+                .deadLetterExchange(SUB_ORDER_DLX_EXCHANGE)
+                .deadLetterRoutingKey(SUB_ORDER_DLX_ROUTING_KEY)
+                .build();
     }
 
     /**
-     * 3. 绑定队列到交换机，并指定路由键
+     * 业务绑定
      */
     @Bean
     public Binding subOrderEsBinding() {
-        return BindingBuilder
-                .bind(subOrderEsQueue())
+        return BindingBuilder.bind(subOrderEsQueue())
                 .to(subOrderExchange())
                 .with(SUB_ORDER_SYNC_ROUTING_KEY);
     }
 
+    // ========== 死信队列配置（消费者重试兜底）==========
+
     /**
-     * 4. 配置消息转换器：将对象自动转为 JSON 格式发送
+     * 死信交换机
      */
     @Bean
-    public MessageConverter subOrderMessageConverter() {
-        return new Jackson2JsonMessageConverter();
+    public DirectExchange subOrderDlxExchange() {
+        return new DirectExchange(SUB_ORDER_DLX_EXCHANGE, true, false);
+    }
+
+    /**
+     * 死信队列（TTL=30秒，过期后回流业务队列）
+     */
+    @Bean
+    public Queue subOrderDlxQueue() {
+        return QueueBuilder.durable(SUB_ORDER_DLX_QUEUE)
+                .ttl(RETRY_INTERVAL_MS)
+                .deadLetterExchange(SUB_ORDER_EXCHANGE)
+                .deadLetterRoutingKey(SUB_ORDER_SYNC_ROUTING_KEY)
+                .build();
+    }
+
+    /**
+     * 死信绑定
+     */
+    @Bean
+    public Binding subOrderDlxBinding() {
+        return BindingBuilder.bind(subOrderDlxQueue())
+                .to(subOrderDlxExchange())
+                .with(SUB_ORDER_DLX_ROUTING_KEY);
     }
 }

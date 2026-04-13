@@ -32,11 +32,11 @@ public class OrderMQConfig {
 
     // ========== 延迟时间常量 ==========
     /** 订单超时时间：15分钟 = 15 * 60 * 1000 ms */
-    //public static final int ORDER_TIMEOUT_MS = 15 * 60 * 1000;
-    public static final int ORDER_TIMEOUT_MS =  10 * 1000;
+    public static final int ORDER_TIMEOUT_MS = 15 * 60 * 1000;
+    //public static final int ORDER_TIMEOUT_MS =  10 * 1000;
     /** 消费者重试间隔：30秒 */
-    //public static final int RETRY_INTERVAL_MS = 30000;
-    public static final int RETRY_INTERVAL_MS = 3000;
+    public static final int RETRY_INTERVAL_MS = 30000;
+    //public static final int RETRY_INTERVAL_MS = 3000;
 
     // ========== 延迟队列配置（消息先到这里，等待 TTL 到期）==========
 
