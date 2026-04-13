@@ -1,7 +1,9 @@
 package com.github.shangtanlin.model.dto.order;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -10,6 +12,8 @@ import java.util.List;
 
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class OrderSubmitDTO {
 
 
@@ -36,6 +40,8 @@ public class OrderSubmitDTO {
 
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class ShopOrderSubmitRequest {
         private Long shopId;           // 店铺ID
         private Long shopCouponId;     // 该店铺选中的店铺券ID（可选）
@@ -47,6 +53,8 @@ public class OrderSubmitDTO {
 
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class ItemSubmitRequest {
         private Long skuId;     //如果是从购物车传入，则需要把Redis和Mysql中的数据清除
         private Integer quantity;

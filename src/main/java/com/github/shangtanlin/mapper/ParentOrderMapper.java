@@ -26,15 +26,17 @@ public interface ParentOrderMapper extends BaseMapper<ParentOrder> {
             @Param("userId") Long userId);
 
     /**
-     * 根据编号和用户Id修改订单状态
+     * 根据编号和用户Id修改订单状态（乐观锁）
      * @param orderSn
      * @param userId
+     * @param status
      * @param oldStatus
+     * @return 影响的行数（0 表示状态已变更，未更新）
      */
     @Update("update parent_order set status = #{status} " +
             "where order_sn = #{orderSn} and user_id = #{userId} " +
             "and status = #{oldStatus}")
-    void setStatusBySnAndUserId(
+    int setStatusBySnAndUserId(
             @Param("orderSn") String orderSn,
             @Param("userId") Long userId,
             @Param("status") Integer status,

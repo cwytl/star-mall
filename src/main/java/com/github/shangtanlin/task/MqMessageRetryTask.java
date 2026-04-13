@@ -3,6 +3,7 @@ package com.github.shangtanlin.task;
 import com.alibaba.fastjson.JSON;
 import com.github.shangtanlin.mapper.mq.MqMessageLogMapper;
 import com.github.shangtanlin.model.dto.mq.MqCorrelationData;
+import com.github.shangtanlin.model.dto.order.OrderCancelMessage;
 import com.github.shangtanlin.model.entity.mq.MqMessageLog;
 import com.github.shangtanlin.mq.cart.CartWriteBackMessage;
 import lombok.extern.slf4j.Slf4j;
@@ -18,7 +19,7 @@ import java.util.List;
 
 /**
  * 发送失败消息补偿重发定时任务
- * 处理 type=0（发送失败）且 status IN (0, 2, 3) 的记录
+ * 处理 source_type=0（生产者端）且 status IN (0, 2, 3) 的记录
  */
 @Component
 @Slf4j
@@ -28,6 +29,12 @@ public class MqMessageRetryTask {
      * 最大重试次数
      */
     private static final int MAX_RETRY_COUNT = 10;
+
+    /**
+     * 业务类型常量
+     */
+    private static final int BUSINESS_TYPE_CART = 0;      // 购物车写回
+    private static final int BUSINESS_TYPE_ORDER = 1;     // 订单超时关单
 
     @Autowired
     private MqMessageLogMapper mqMessageLogMapper;
@@ -57,11 +64,14 @@ public class MqMessageRetryTask {
                     continue;
                 }
 
-                // 2. 将数据库中的 JSON 字符串还原为业务对象
-                CartWriteBackMessage messageObj = JSON.parseObject(
-                        failLog.getPayload(),
-                        CartWriteBackMessage.class
-                );
+                // 2. 根据业务类型反序列化为对应的业务对象
+                Object messageObj = deserializeByBusinessType(failLog);
+
+                if (messageObj == null) {
+                    log.error("无法反序列化消息，ID: {}, businessType: {}", failLog.getId(), failLog.getBusinessType());
+                    mqMessageLogMapper.markManualProcessed(failLog.getId());
+                    continue;
+                }
 
                 // 3. 构造 CorrelationData
                 MqCorrelationData cd = new MqCorrelationData(
@@ -92,11 +102,36 @@ public class MqMessageRetryTask {
                         cd
                 );
 
-                log.info("已触发消息补发，ID: {}, 当前重试次数: {}", failLog.getId(), newRetryCount);
+                log.info("已触发消息补发，ID: {}, businessType: {}, 当前重试次数: {}",
+                        failLog.getId(), failLog.getBusinessType(), newRetryCount);
 
             } catch (Exception e) {
                 log.error("重试发送消息发生异常，ID: {}", failLog.getId(), e);
             }
+        }
+    }
+
+    /**
+     * 根据业务类型反序列化消息
+     */
+    private Object deserializeByBusinessType(MqMessageLog failLog) {
+        Integer businessType = failLog.getBusinessType();
+        String payload = failLog.getPayload();
+
+        if (businessType == null || payload == null) {
+            return null;
+        }
+
+        switch (businessType) {
+            case BUSINESS_TYPE_CART:
+                // 购物车写回消息
+                return JSON.parseObject(payload, CartWriteBackMessage.class);
+            case BUSINESS_TYPE_ORDER:
+                // 订单超时关单消息
+                return JSON.parseObject(payload, OrderCancelMessage.class);
+            default:
+                log.warn("未知的业务类型: {}, ID: {}", businessType, failLog.getId());
+                return null;
         }
     }
 

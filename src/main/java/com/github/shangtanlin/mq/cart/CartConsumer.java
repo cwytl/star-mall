@@ -72,6 +72,9 @@ public class CartConsumer {
                 cartWriteBackMessage.getMsgId(), retryCount);
 
         try {
+            // 模拟异常
+            CartItem cartItem = null;
+            cartItem.getId();
 
             // 2. 执行业务逻辑
             Integer type = cartWriteBackMessage.getType();
@@ -138,7 +141,8 @@ public class CartConsumer {
 
             MqMessageLog messageLog = MqMessageLog.builder()
                     .id(newId)  // 使用新 ID
-                    .type(1)  // 1-消费者
+                    .sourceType(1)  // 1-消费者端
+                    .businessType(0)  // 0-购物车回流
                     .exchange(CartMQConfig.CART_EXCHANGE)
                     .routingKey(CartMQConfig.CART_ROUTING_KEY)
                     .payload(JSON.toJSONString(msg))

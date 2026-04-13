@@ -81,10 +81,13 @@ public class RabbitMQBaseConfig {
                 return;
             }
 
+            String exchange = returned.getExchange();
+            String routingKey = returned.getRoutingKey();
             String cause = "NO_ROUTE: " + returned.getReplyText();
+
             mqMessageLogMapper.updateStatusToRouteFail(msgId, cause);
             log.error("消息路由失败: ID = {}, 交换机 = {}, 路由键 = {}, 原因 = {}",
-                    msgId, returned.getExchange(), returned.getRoutingKey(), cause);
+                    msgId, exchange, routingKey, cause);
         });
 
         // 测试连接

@@ -244,14 +244,15 @@ public class CartServiceImpl implements CartService {
         // 2. 【先入库再发送】发送前先入库（status=0-发送中）
         MqMessageLog messageLog = MqMessageLog.builder()
                 .id(msgId)
-                .type(0)  // 0-生产者
+                .sourceType(0)  // 0-生产者端
+                .businessType(0)  // 0-购物车回流
                 .exchange(CART_EXCHANGE)
                 .routingKey(CART_ROUTING_KEY)
                 .payload(JSONUtil.toJsonStr(cartWriteBackMessage))
                 .status(0)  // 0-发送中
                 .retryCount(0)
                 .cause(null)
-                .nextRetryTime(LocalDateTime.now().plusMinutes(1))  // 1分钟后可重试
+                .nextRetryTime(LocalDateTime.now())  // 立即可重试
                 .build();
         mqMessageLogMapper.insert(messageLog);
 
@@ -263,13 +264,13 @@ public class CartServiceImpl implements CartService {
                 cartWriteBackMessage
         );
 
-        //String wrongKey = "invalid_key";
+        String wrongKey = "invalid_key";
 
         // 4. 发送消息
         rabbitTemplate.convertAndSend(
                 CART_EXCHANGE,
-                CART_ROUTING_KEY,
-                //wrongKey,
+                //CART_ROUTING_KEY,
+                wrongKey,
                 cartWriteBackMessage,
                 message -> {
                     message.getMessageProperties().setCorrelationId(msgId);
@@ -309,7 +310,8 @@ public class CartServiceImpl implements CartService {
         // 2. 【先入库再发送】
         MqMessageLog messageLog = MqMessageLog.builder()
                 .id(msgId)
-                .type(0)  // 0-生产者
+                .sourceType(0)  // 0-生产者端
+                .businessType(0)  // 0-购物车回流
                 .exchange(CART_EXCHANGE)
                 .routingKey(CART_ROUTING_KEY)
                 .payload(JSONUtil.toJsonStr(cartWriteBackMessage))
@@ -324,6 +326,9 @@ public class CartServiceImpl implements CartService {
         MqCorrelationData correlationData = new MqCorrelationData(
                 msgId, CART_EXCHANGE, CART_ROUTING_KEY, cartWriteBackMessage
         );
+
+
+
 
         // 4. 发送消息
         rabbitTemplate.convertAndSend(
@@ -377,7 +382,8 @@ public class CartServiceImpl implements CartService {
         // 2. 【先入库再发送】
         MqMessageLog messageLog = MqMessageLog.builder()
                 .id(msgId)
-                .type(0)  // 0-生产者
+                .sourceType(0)  // 0-生产者端
+                .businessType(0)  // 0-购物车回流
                 .exchange(CART_EXCHANGE)
                 .routingKey(CART_ROUTING_KEY)
                 .payload(JSONUtil.toJsonStr(cartWriteBackMessage))

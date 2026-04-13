@@ -26,12 +26,16 @@ import com.github.shangtanlin.mapper.*;
 
 import com.github.shangtanlin.mapper.coupon.CouponTemplateMapper;
 import com.github.shangtanlin.mapper.coupon.CouponUserRecordMapper;
+import com.github.shangtanlin.mapper.mq.MqMessageLogMapper;
+import cn.hutool.json.JSONUtil;
 import com.github.shangtanlin.model.dto.es.OrderSyncMessage;
 import com.github.shangtanlin.model.dto.es.SubOrderIndexDoc;
 import com.github.shangtanlin.model.dto.order.OrderCancelMessage;
 import com.github.shangtanlin.model.dto.order.OrderConfirmDTO;
 import com.github.shangtanlin.model.dto.order.OrderItemDTO;
 import com.github.shangtanlin.model.dto.order.OrderSubmitDTO;
+import com.github.shangtanlin.model.dto.mq.MqCorrelationData;
+import com.github.shangtanlin.model.entity.mq.MqMessageLog;
 import com.github.shangtanlin.model.entity.order.OrderItem;
 import com.github.shangtanlin.model.entity.order.ParentOrder;
 import com.github.shangtanlin.model.entity.order.SubOrder;
@@ -50,6 +54,7 @@ import com.github.shangtanlin.service.*;
 import lombok.Builder;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -141,6 +146,9 @@ public class OrderServiceImpl
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
+
+    @Autowired
+    private MqMessageLogMapper mqMessageLogMapper;
 
 
 
@@ -363,7 +371,6 @@ public class OrderServiceImpl
 
         try {
             // 2. 构造对象与执行业务逻辑
-            parentOrder.setOrderSn("202604090567677953");
             parentOrderMapper.insert(parentOrder);
 
             // 3. 其他操作（如扣减库存等）
@@ -559,20 +566,55 @@ public class OrderServiceImpl
                         );
                     }
 
-                    // B. 发送延迟关单消息 (修改点)
-                    // 不要用 Map map = new HashMap();
+                    // B. 发送延迟关单消息（先入库再发送，使用 TTL + 死信队列方式）
                     OrderCancelMessage cancelMessage = new OrderCancelMessage(orderSn, userId);
-                    rabbitTemplate.convertAndSend(
-                            OrderMQConfig.ORDER_DELAY_EXCHANGE,
-                            OrderMQConfig.ORDER_DELAY_ROUTING_KEY,
-                            cancelMessage, // 直接发对象
-                            message -> {
-                                //message.getMessageProperties().setHeader("x-delay",  20 * 1000);
-                                message.getMessageProperties().setHeader("x-delay", 15 * 60 * 1000);
-                                return message;
-                            }
+
+                    // 1. 生成消息ID
+                    String msgId = UUID.randomUUID().toString();
+
+                    // 2. 先入库（source_type=0, business_type=1, status=0）
+                    MqMessageLog messageLog = MqMessageLog.builder()
+                            .id(msgId)
+                            .sourceType(0)  // 0-生产者端
+                            .businessType(1)  // 1-超时关单
+                            .exchange(OrderMQConfig.DELAY_EXCHANGE)
+                            .routingKey(OrderMQConfig.DELAY_ROUTING_KEY)
+                            .payload(JSONUtil.toJsonStr(cancelMessage))
+                            .status(0)  // 0-发送中
+                            .retryCount(0)
+                            .cause(null)
+                            .nextRetryTime(LocalDateTime.now())  // 立即可重试
+                            .build();
+                    mqMessageLogMapper.insert(messageLog);
+
+                    // 3. 构造 CorrelationData
+                    MqCorrelationData correlationData = new MqCorrelationData(
+                            msgId,
+                            OrderMQConfig.DELAY_EXCHANGE,
+                            OrderMQConfig.DELAY_ROUTING_KEY,
+                            cancelMessage
                     );
-                    log.info("已发送延迟关单消息，包含 OrderSn: {} 和 UserId: {}", orderSn, userId);
+
+                    //模拟路由失败
+                    String wrongKey = "invalidKey";
+
+                    // 4. 发送消息到延迟交换机（普通 Direct Exchange，支持 mandatory）
+                    // 消息会先进入 delay.queue（TTL=15分钟），过期后自动进入 dlx.exchange → timeout.queue
+                    rabbitTemplate.convertAndSend(
+                            OrderMQConfig.DELAY_EXCHANGE,
+                            //OrderMQConfig.DELAY_ROUTING_KEY,
+                            wrongKey,
+                            cancelMessage,
+                            message -> {
+                                message.getMessageProperties().setCorrelationId(msgId);
+                                message.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+                                // 不需要设置 x-delay header，TTL 由队列配置决定
+                                return message;
+                            },
+                            correlationData
+                    );
+                    log.info("已发送延迟关单消息到 TTL 队列，MsgId: {}, OrderSn: {}, UserId: {}, TTL={}分钟",
+                            msgId, orderSn, userId, OrderMQConfig.ORDER_TIMEOUT_MS / 60000);
                     log.info("事务已提交：已发送 ES 同步消息,OrderSn: {}", orderSn);
 
                 }
@@ -606,15 +648,30 @@ public class OrderServiceImpl
         if (parentOrder == null) {
             throw new BusinessException("该订单不存在");
         }
-        if (parentOrder.getStatus() != 0) {
-            throw new BusinessException("订单状态异常");
-        }
-        //关闭主订单
-        parentOrderMapper.setStatusBySnAndUserId(orderSn,userId,4,0);
 
+        // 幂等性设计：如果订单已经关闭（status=4），直接返回成功，不抛异常
+        if (parentOrder.getStatus() == 4) {
+            log.info("订单已经关闭，幂等性跳过 - 主订单号: {}", orderSn);
+            return true;  // 返回 true 表示"处理成功"，消费者会 ACK
+        }
+
+        // 如果订单已支付或其他状态，说明不需要关单，也返回成功（幂等）
+        if (parentOrder.getStatus() != 0) {
+            log.info("订单状态为 {}，无需关单（可能已支付） - 主订单号: {}", parentOrder.getStatus(), orderSn);
+            return true;  // 返回 true 表示"处理成功"，消费者会 ACK
+        }
+
+        //关闭主订单（乐观锁：只有 status=0 才会更新）
+        int rows = parentOrderMapper.setStatusBySnAndUserId(orderSn, userId, 4, 0);
+
+        // 幂等性保障：如果返回 0，说明订单已被其他线程关闭，直接返回成功
+        if (rows == 0) {
+            log.info("订单状态已变更（并发竞争失败），幂等性跳过 - 主订单号: {}", orderSn);
+            return true;
+        }
 
         //关闭子订单
-        subOrderMapper.setStatusByParentSn(orderSn,userId,4,0);
+        subOrderMapper.setStatusByParentSn(orderSn, userId, 4, 0);
 
         //2.回补库存
         // A. 查出该主订单下所有的订单项（OrderItem）

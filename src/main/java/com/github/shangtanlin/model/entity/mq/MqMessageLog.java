@@ -22,9 +22,14 @@ public class MqMessageLog {
     private String id;
 
     /**
-     * 来源: 0-生产者, 1-消费者
+     * 来源类型: 0-生产者端, 1-消费者端
      */
-    private Integer type;
+    private Integer sourceType;
+
+    /**
+     * 业务类型: 0-购物车回流, 1-超时关单
+     */
+    private Integer businessType;
 
     /**
      * 交换机名称
@@ -62,7 +67,7 @@ public class MqMessageLog {
     private String cause;
 
     /**
-     * 下次重试时间（生产者用，消费者为null）
+     * 下次重试时间（生产者端用，消费者端为null）
      */
     private LocalDateTime nextRetryTime;
 
